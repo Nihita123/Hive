@@ -1,75 +1,102 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { toast } from 'react-hot-toast'
-import Editor, { type OnMount } from '@monaco-editor/react'
-import type * as Monaco from 'monaco-editor'
-import { projectsApi, executionApi } from '../services/api'
-import { useEditorStore } from '../store/editorStore'
-import { useAuthStore } from '../store/authStore'
-import { useProjectSocket } from '../hooks/useProjectSocket'
-import { getSocket } from '../sockets/socket'
-import { Spinner } from '../components/Spinner'
-import { UserAvatar } from '../components/UserAvatar'
+import { useEffect, useRef, useCallback, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { toast } from "react-hot-toast";
+import Editor, { type OnMount } from "@monaco-editor/react";
+import type * as Monaco from "monaco-editor";
+import { projectsApi, executionApi } from "../services/api";
+import { useEditorStore } from "../store/editorStore";
+import { useAuthStore } from "../store/authStore";
+import { useProjectSocket } from "../hooks/useProjectSocket";
+import { getSocket } from "../sockets/socket";
+import { Spinner } from "../components/Spinner";
+import { UserAvatar } from "../components/UserAvatar";
 
 const MONACO_LANG: Record<string, string> = {
-  javascript: 'javascript', typescript: 'typescript',
-  python: 'python', go: 'go', rust: 'rust',
-  cpp: 'cpp', java: 'java',
-}
+  javascript: "javascript",
+  typescript: "typescript",
+  python: "python",
+  go: "go",
+  rust: "rust",
+  cpp: "cpp",
+  java: "java",
+};
 
 export function WorkspacePage() {
-  const { projectId } = useParams<{ projectId: string }>()
-  const navigate = useNavigate()
-  const { user } = useAuthStore()
-  const socket = getSocket()
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const { user } = useAuthStore();
+  const socket = getSocket();
 
   const {
-    project, localCode, localVersion,
-    activeUsers, typingUsers, remoteCursors,
-    executionResult, isExecuting,
-    setProject, setLocalCode, setIsExecuting, setExecutionResult, reset,
-  } = useEditorStore()
+    project,
+    localCode,
+    localVersion,
+    activeUsers,
+    typingUsers,
+    remoteCursors,
+    executionResult,
+    isExecuting,
+    isSaving,
+    setProject,
+    setLocalCode,
+    setIsExecuting,
+    setExecutionResult,
+    setIsSaving,
+    reset,
+  } = useEditorStore();
 
   // Brief "synced" flash after a successful code_synced event
-  const [syncedFlash, setSyncedFlash] = useState(false)
-  const syncFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [syncedFlash, setSyncedFlash] = useState(false);
+  const syncFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
-  const decorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null)
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const decorationsRef =
+    useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
+  const pendingCodeRef = useRef<string | null>(null);
+  const isSavingRef = useRef(false);
 
   // Connect socket events
-  useProjectSocket(projectId)
+  useProjectSocket(projectId);
+
+  // Keep a local ref of whether a code update is currently in flight.
+  useEffect(() => {
+    isSavingRef.current = isSaving;
+  }, [isSaving]);
 
   // Flash "synced" whenever version increments
-  const prevVersionRef = useRef(localVersion)
+  const prevVersionRef = useRef(localVersion);
   useEffect(() => {
     if (localVersion !== prevVersionRef.current) {
-      prevVersionRef.current = localVersion
-      setSyncedFlash(true)
-      if (syncFlashTimer.current) clearTimeout(syncFlashTimer.current)
-      syncFlashTimer.current = setTimeout(() => setSyncedFlash(false), 1500)
+      prevVersionRef.current = localVersion;
+      setSyncedFlash(true);
+      if (syncFlashTimer.current) clearTimeout(syncFlashTimer.current);
+      syncFlashTimer.current = setTimeout(() => setSyncedFlash(false), 1500);
     }
-  }, [localVersion])
+  }, [localVersion]);
 
   // Load project on mount
   useEffect(() => {
-    if (!projectId) return
-    reset()
-    projectsApi.get(projectId)
+    if (!projectId) return;
+    reset();
+    projectsApi
+      .get(projectId)
       .then(setProject)
-      .catch(() => { toast.error('Project not found'); navigate(-1) })
+      .catch(() => {
+        toast.error("Project not found");
+        navigate(-1);
+      });
     return () => {
-      if (syncFlashTimer.current) clearTimeout(syncFlashTimer.current)
-      reset()
-    }
-  }, [projectId])
+      if (syncFlashTimer.current) clearTimeout(syncFlashTimer.current);
+      reset();
+    };
+  }, [projectId]);
 
   // Render remote cursors as Monaco decorations
   useEffect(() => {
-    const editor = editorRef.current
-    if (!editor) return
+    const editor = editorRef.current;
+    if (!editor) return;
 
-    const decorations: Monaco.editor.IModelDeltaDecoration[] = []
+    const decorations: Monaco.editor.IModelDeltaDecoration[] = [];
     remoteCursors.forEach((cursor) => {
       decorations.push({
         range: {
@@ -79,97 +106,122 @@ export function WorkspacePage() {
           endColumn: cursor.position.column + 2,
         },
         options: {
-          className: 'remote-cursor',
+          className: "remote-cursor",
           hoverMessage: { value: cursor.email },
         },
-      })
-    })
+      });
+    });
 
     if (decorationsRef.current) {
-      decorationsRef.current.set(decorations)
+      decorationsRef.current.set(decorations);
     } else {
-      decorationsRef.current = editor.createDecorationsCollection(decorations)
+      decorationsRef.current = editor.createDecorationsCollection(decorations);
     }
-  }, [remoteCursors])
+  }, [remoteCursors]);
 
   const handleEditorMount: OnMount = (editor) => {
-    editorRef.current = editor
+    editorRef.current = editor;
 
     editor.onDidChangeCursorPosition((e) => {
-      if (!projectId) return
-      socket.emit('cursor_move', {
+      if (!projectId) return;
+      socket.emit("cursor_move", {
         projectId,
         cursorPosition: {
           line: e.position.lineNumber - 1,
           column: e.position.column - 1,
         },
-      })
-    })
-  }
+      });
+    });
+  };
 
-  const handleCodeChange = useCallback((value: string | undefined) => {
-    const code = value ?? ''
-    setLocalCode(code)
+  const flushPendingCode = useCallback(() => {
+    if (!projectId) return;
+    const pending = pendingCodeRef.current;
+    if (pending === null) return;
 
-    if (!projectId) return
-
-    // Typing indicator
-    socket.emit('typing', { projectId })
-
-    // Send code update with current version (read from store directly to avoid stale closure)
-    socket.emit('code_change', {
+    pendingCodeRef.current = null;
+    setIsSaving(true);
+    socket.emit("code_change", {
       projectId,
-      code,
+      code: pending,
       version: useEditorStore.getState().localVersion,
-    })
-  }, [projectId, socket])
+    });
+  }, [projectId, setIsSaving, socket]);
+
+  const handleCodeChange = useCallback(
+    (value: string | undefined) => {
+      const code = value ?? "";
+      setLocalCode(code);
+      pendingCodeRef.current = code;
+
+      if (!projectId) return;
+
+      // Typing indicator
+      socket.emit("typing", { projectId });
+
+      if (!isSavingRef.current) {
+        flushPendingCode();
+      }
+    },
+    [projectId, socket, flushPendingCode],
+  );
+
+  useEffect(() => {
+    if (!isSaving && pendingCodeRef.current !== null) {
+      flushPendingCode();
+    }
+  }, [isSaving, flushPendingCode]);
 
   const handleRun = async () => {
-    if (!project || !projectId) return
-    setIsExecuting(true)
-    setExecutionResult(null)
+    if (!project || !projectId) return;
+    setIsExecuting(true);
+    setExecutionResult(null);
     try {
-      const { jobId } = await executionApi.run(projectId, project.language, localCode)
-      toast(`Job queued`, { icon: '⚡', duration: 2000 })
+      const { jobId } = await executionApi.run(
+        projectId,
+        project.language,
+        localCode,
+      );
+      toast(`Job queued`, { icon: "⚡", duration: 2000 });
 
       // Poll as fallback — socket push (execution_completed) is the primary path
       const poll = async (attempts = 0): Promise<void> => {
         if (attempts > 25) {
-          setIsExecuting(false)
-          return
+          setIsExecuting(false);
+          return;
         }
-        const result = await executionApi.status(jobId)
-        if (result.status === 'queued' || result.status === 'running') {
-          await new Promise((r) => setTimeout(r, 800))
-          return poll(attempts + 1)
+        const result = await executionApi.status(jobId);
+        if (result.status === "queued" || result.status === "running") {
+          await new Promise((r) => setTimeout(r, 800));
+          return poll(attempts + 1);
         }
         // Only apply if socket hasn't already delivered the result
         if (useEditorStore.getState().isExecuting) {
-          setExecutionResult(result)
-          setIsExecuting(false)
+          setExecutionResult(result);
+          setIsExecuting(false);
         }
-      }
+      };
 
       // Give the socket 1.5s to deliver first
       setTimeout(() => {
-        if (useEditorStore.getState().isExecuting) void poll()
-      }, 1500)
+        if (useEditorStore.getState().isExecuting) void poll();
+      }, 1500);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Execution failed')
-      setIsExecuting(false)
+      toast.error(err instanceof Error ? err.message : "Execution failed");
+      setIsExecuting(false);
     }
-  }
+  };
 
   const typingUsersList = activeUsers.filter(
-    (u) => u.id !== user?.id && typingUsers.has(u.id)
-  )
+    (u) => u.id !== user?.id && typingUsers.has(u.id),
+  );
 
   if (!project) {
     return (
       <div className="h-screen bg-zinc-950 flex items-center justify-center">
         <Spinner size="lg" />
       </div>
-    )
+    );
   }
 
   return (
@@ -192,7 +244,7 @@ export function WorkspacePage() {
         {/* Sync indicator */}
         <span
           className={`text-xs transition-opacity duration-500 ${
-            syncedFlash ? 'text-emerald-400 opacity-100' : 'opacity-0'
+            syncedFlash ? "text-emerald-400 opacity-100" : "opacity-0"
           }`}
         >
           ✓ synced
@@ -211,7 +263,9 @@ export function WorkspacePage() {
             />
           ))}
           {activeUsers.length > 5 && (
-            <span className="text-zinc-500 text-xs ml-1">+{activeUsers.length - 5}</span>
+            <span className="text-zinc-500 text-xs ml-1">
+              +{activeUsers.length - 5}
+            </span>
           )}
         </div>
 
@@ -220,7 +274,13 @@ export function WorkspacePage() {
           disabled={isExecuting}
           className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-1.5 rounded-lg transition-colors flex items-center gap-2"
         >
-          {isExecuting ? <><Spinner size="sm" /> Running…</> : '▶ Run'}
+          {isExecuting ? (
+            <>
+              <Spinner size="sm" /> Running…
+            </>
+          ) : (
+            "▶ Run"
+          )}
         </button>
       </header>
 
@@ -230,23 +290,24 @@ export function WorkspacePage() {
         <div className="flex-1 overflow-hidden">
           <Editor
             height="100%"
-            language={MONACO_LANG[project.language] ?? 'plaintext'}
+            language={MONACO_LANG[project.language] ?? "plaintext"}
             value={localCode}
             onChange={handleCodeChange}
             onMount={handleEditorMount}
             theme="vs-dark"
             options={{
               fontSize: 14,
-              fontFamily: '"ui-monospace", "Cascadia Code", Consolas, monospace',
+              fontFamily:
+                '"ui-monospace", "Cascadia Code", Consolas, monospace',
               minimap: { enabled: false },
               scrollBeyondLastLine: false,
-              lineNumbers: 'on',
-              renderLineHighlight: 'line',
+              lineNumbers: "on",
+              renderLineHighlight: "line",
               padding: { top: 12 },
               smoothScrolling: true,
-              cursorBlinking: 'smooth',
+              cursorBlinking: "smooth",
               tabSize: 2,
-              wordWrap: 'off',
+              wordWrap: "off",
             }}
           />
         </div>
@@ -265,7 +326,11 @@ export function WorkspacePage() {
             ) : (
               activeUsers.map((u) => (
                 <div key={u.id} className="flex items-center gap-2.5">
-                  <UserAvatar email={u.email} size="sm" isTyping={typingUsers.has(u.id)} />
+                  <UserAvatar
+                    email={u.email}
+                    size="sm"
+                    isTyping={typingUsers.has(u.id)}
+                  />
                   <div className="min-w-0 flex-1">
                     <p className="text-zinc-200 text-xs truncate">{u.email}</p>
                     {u.id === user?.id && (
@@ -284,7 +349,8 @@ export function WorkspacePage() {
           {typingUsersList.length > 0 && (
             <div className="px-3 py-2 border-t border-zinc-800 bg-zinc-950/50">
               <p className="text-emerald-400 text-xs truncate">
-                ✎ {typingUsersList.map((u) => u.email.split('@')[0]).join(', ')} typing…
+                ✎ {typingUsersList.map((u) => u.email.split("@")[0]).join(", ")}{" "}
+                typing…
               </p>
             </div>
           )}
@@ -302,18 +368,20 @@ export function WorkspacePage() {
               <span
                 className={
                   executionResult.timedOut
-                    ? 'text-amber-400'
+                    ? "text-amber-400"
                     : executionResult.exitCode === 0
-                    ? 'text-emerald-400'
-                    : 'text-rose-400'
+                      ? "text-emerald-400"
+                      : "text-rose-400"
                 }
               >
                 {executionResult.timedOut
-                  ? '⏱ Timed out'
-                  : `Exit ${executionResult.exitCode ?? '?'}`}
+                  ? "⏱ Timed out"
+                  : `Exit ${executionResult.exitCode ?? "?"}`}
               </span>
               {executionResult.durationMs !== undefined && (
-                <span className="text-zinc-500">{executionResult.durationMs}ms</span>
+                <span className="text-zinc-500">
+                  {executionResult.durationMs}ms
+                </span>
               )}
               <button
                 onClick={() => setExecutionResult(null)}
@@ -351,5 +419,5 @@ export function WorkspacePage() {
         </div>
       </div>
     </div>
-  )
+  );
 }

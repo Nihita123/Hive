@@ -82,7 +82,7 @@ export async function runInDocker(params: {
     Tty: false,
 
     // ── Security hardening ────────────────────────────────────────────────
-    NetworkDisabled: true,   // no outbound network access
+    NetworkDisabled: true, // no outbound network access
 
     HostConfig: {
       // Memory hard limit
@@ -119,8 +119,18 @@ export async function runInDocker(params: {
 
     // Collect all output chunks
     const chunks: Buffer[] = [];
+    let streamEnded = false;
+
     stream.on("data", (chunk: Buffer) => {
       chunks.push(chunk);
+    });
+
+    stream.on("end", () => {
+      streamEnded = true;
+    });
+
+    stream.on("close", () => {
+      streamEnded = true;
     });
 
     await container.start();
@@ -144,13 +154,18 @@ export async function runInDocker(params: {
 
     // Kill if timed out
     if (timedOut) {
-      await container.kill().catch(() => { /* already dead */ });
+      await container.kill().catch(() => {
+        /* already dead */
+      });
     }
 
     const exitCode = timedOut ? null : waitResult!.StatusCode;
 
-    // Give the stream a tick to flush any remaining buffered data
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for stream to finish and all data to be buffered (up to 500ms)
+    const streamWaitStart = Date.now();
+    while (!streamEnded && Date.now() - streamWaitStart < 500) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
 
     const rawBuffer = Buffer.concat(chunks);
     const { stdout, stderr } = demuxDockerStream(rawBuffer);
@@ -165,7 +180,9 @@ export async function runInDocker(params: {
     };
   } finally {
     // Always remove the container — even if an error was thrown
-    await container.remove({ force: true }).catch(() => { /* already removed */ });
+    await container.remove({ force: true }).catch(() => {
+      /* already removed */
+    });
   }
 }
 
