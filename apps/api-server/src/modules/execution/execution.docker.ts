@@ -2,20 +2,18 @@ import Docker from "dockerode";
 import { env } from "../../config/env";
 import type { ExecutionJobResult, SupportedLanguage } from "./execution.types";
 
-const docker = new Docker(); // connects via /var/run/docker.sock by default
+const docker = new Docker();
 
-// ─── Language → image + run command ──────────────────────────────────────────
+// ─── Language config ──────────────────────────────────────────────────────────
 
 type LangSpec = {
   image: string;
-  /** Build the Cmd array. Code is passed as the last argument. */
   cmd: (code: string) => string[];
 };
 
 const LANG_SPEC: Record<SupportedLanguage, LangSpec> = {
   javascript: {
     image: "node:20-alpine",
-    // `node -e <code>` — no file written, no shell injection possible
     cmd: (code) => ["node", "-e", code],
   },
   python: {
@@ -24,38 +22,17 @@ const LANG_SPEC: Record<SupportedLanguage, LangSpec> = {
   },
 };
 
-// ─── Output stream demux ──────────────────────────────────────────────────────
-
-/**
- * Docker multiplexes stdout and stderr into a single stream with an 8-byte
- * header per chunk: [stream_type(1), 0,0,0, size(4)].
- * stream_type: 1 = stdout, 2 = stderr
- */
-function demuxDockerStream(buffer: Buffer): { stdout: string; stderr: string } {
-  let offset = 0;
-  let stdout = "";
-  let stderr = "";
-
-  while (offset + 8 <= buffer.length) {
-    const streamType = buffer[offset];
-    const size = buffer.readUInt32BE(offset + 4);
-    offset += 8;
-
-    if (offset + size > buffer.length) break;
-
-    const chunk = buffer.slice(offset, offset + size).toString("utf8");
-    offset += size;
-
-    if (streamType === 1) stdout += chunk;
-    else if (streamType === 2) stderr += chunk;
-  }
-
-  return { stdout, stderr };
-}
-
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max) + `\n[truncated — output exceeded ${max} bytes]`;
+}
+
+function parseMemoryLimit(limit: string): number {
+  const lower = limit.toLowerCase();
+  if (lower.endsWith("g")) return parseFloat(lower) * 1024 * 1024 * 1024;
+  if (lower.endsWith("m")) return parseFloat(lower) * 1024 * 1024;
+  if (lower.endsWith("k")) return parseFloat(lower) * 1024;
+  return parseInt(lower, 10);
 }
 
 // ─── Main execution function ──────────────────────────────────────────────────
@@ -68,80 +45,45 @@ export async function runInDocker(params: {
   const spec = LANG_SPEC[params.language];
   const startedAt = Date.now();
 
-  // Create the container — throws if Docker is unavailable
   const container = await docker.createContainer({
     Image: spec.image,
     Cmd: spec.cmd(params.code),
-
-    // Attach stdio so we can feed stdin and capture stdout/stderr
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,
     OpenStdin: true,
     StdinOnce: true,
     Tty: false,
-
-    // ── Security hardening ────────────────────────────────────────────────
-    NetworkDisabled: true, // no outbound network access
-
+    NetworkDisabled: true,
     HostConfig: {
-      // Memory hard limit
       Memory: parseMemoryLimit(env.execution.memoryLimit),
-      MemorySwap: parseMemoryLimit(env.execution.memoryLimit), // disable swap
-
-      // CPU throttle
+      MemorySwap: parseMemoryLimit(env.execution.memoryLimit),
       CpuQuota: env.execution.cpuQuota,
       CpuPeriod: env.execution.cpuPeriod,
-
-      // Drop ALL Linux capabilities
       CapDrop: ["ALL"],
-
-      // Prevent privilege escalation
       SecurityOpt: ["no-new-privileges"],
-
-      // No access to host devices
-      Devices: [],
-
-      AutoRemove: false, // we remove manually after capturing output
+      AutoRemove: false,
     },
   });
 
   let timedOut = false;
 
   try {
-    // Attach to the multiplexed stream before starting
-    const stream = await container.attach({
-      stream: true,
-      stdout: true,
-      stderr: true,
-      stdin: true,
-    });
-
-    // Collect all output chunks
-    const chunks: Buffer[] = [];
-    let streamEnded = false;
-
-    stream.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-
-    stream.on("end", () => {
-      streamEnded = true;
-    });
-
-    stream.on("close", () => {
-      streamEnded = true;
-    });
-
     await container.start();
 
-    // Write stdin then close it
+    // Write stdin if provided
     if (params.input) {
-      stream.write(params.input);
+      const stdinStream = await container.attach({
+        stream: true,
+        stdin: true,
+        stdout: false,
+        stderr: false,
+      });
+      stdinStream.write(params.input);
+      stdinStream.end();
     }
-    stream.end();
 
-    // Race: container finishes vs hard timeout
+    // Race container completion vs timeout
     const waitResult = await Promise.race([
       container.wait() as Promise<{ StatusCode: number }>,
       new Promise<null>((resolve) =>
@@ -152,49 +94,65 @@ export async function runInDocker(params: {
       ),
     ]);
 
-    // Kill if timed out
     if (timedOut) {
-      await container.kill().catch(() => {
-        /* already dead */
-      });
+      await container.kill().catch(() => {});
     }
 
     const exitCode = timedOut ? null : waitResult!.StatusCode;
 
-    // Wait for stream to finish and all data to be buffered (up to 500ms)
-    const streamWaitStart = Date.now();
-    while (!streamEnded && Date.now() - streamWaitStart < 500) {
-      await new Promise((r) => setTimeout(r, 10));
+    // Use container.logs() AFTER the container has stopped — this is the
+    // reliable way to get all output. The multiplexed stream approach races
+    // against container exit and can miss data.
+    const logBuffer = await new Promise<Buffer>((resolve, reject) => {
+      container.logs(
+        { stdout: true, stderr: true, follow: false },
+        (err, stream) => {
+          if (err) return reject(err);
+          if (!stream) return resolve(Buffer.alloc(0));
+
+          const chunks: Buffer[] = [];
+          // stream is a Buffer when follow=false in some dockerode versions
+          if (Buffer.isBuffer(stream)) {
+            return resolve(stream);
+          }
+          (stream as NodeJS.ReadableStream).on("data", (chunk: Buffer) => chunks.push(chunk));
+          (stream as NodeJS.ReadableStream).on("end", () => resolve(Buffer.concat(chunks)));
+          (stream as NodeJS.ReadableStream).on("error", reject);
+        },
+      );
+    });
+
+    // Demux the Docker multiplexed log stream
+    // Format: [stream_type(1), 0,0,0, size(4), ...data]
+    let stdout = "";
+    let stderr = "";
+    let offset = 0;
+
+    while (offset + 8 <= logBuffer.length) {
+      const streamType = logBuffer[offset];
+      const size = logBuffer.readUInt32BE(offset + 4);
+      offset += 8;
+      if (offset + size > logBuffer.length) break;
+      const chunk = logBuffer.slice(offset, offset + size).toString("utf8");
+      offset += size;
+      if (streamType === 1) stdout += chunk;
+      else if (streamType === 2) stderr += chunk;
     }
 
-    const rawBuffer = Buffer.concat(chunks);
-    const { stdout, stderr } = demuxDockerStream(rawBuffer);
-    const maxBytes = env.execution.maxOutputBytes;
+    // Fallback: if demux produced nothing but buffer has content, treat as raw text
+    if (!stdout && !stderr && logBuffer.length > 0) {
+      stdout = logBuffer.toString("utf8");
+    }
 
+    const max = env.execution.maxOutputBytes;
     return {
-      stdout: truncate(stdout, maxBytes),
-      stderr: truncate(stderr, maxBytes),
+      stdout: truncate(stdout, max),
+      stderr: truncate(stderr, max),
       exitCode,
       durationMs: Date.now() - startedAt,
       timedOut,
     };
   } finally {
-    // Always remove the container — even if an error was thrown
-    await container.remove({ force: true }).catch(() => {
-      /* already removed */
-    });
+    await container.remove({ force: true }).catch(() => {});
   }
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Parse a Docker-style memory string ("128m", "512m", "1g") into bytes.
- */
-function parseMemoryLimit(limit: string): number {
-  const lower = limit.toLowerCase();
-  if (lower.endsWith("g")) return parseFloat(lower) * 1024 * 1024 * 1024;
-  if (lower.endsWith("m")) return parseFloat(lower) * 1024 * 1024;
-  if (lower.endsWith("k")) return parseFloat(lower) * 1024;
-  return parseInt(lower, 10);
 }

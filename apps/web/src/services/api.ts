@@ -4,6 +4,7 @@ import type {
   User,
   Room,
   RoomDetails,
+  RoomInvite,
   Project,
   ProjectWithCode,
   ExecutionResult,
@@ -64,6 +65,15 @@ export const roomsApi = {
 
   delete: (roomId: string) =>
     api.delete<{ ok: boolean }>(`/rooms/${roomId}`).then((r) => r.data),
+
+  transferOwnership: (roomId: string, userId: string) =>
+    api.post<{ room: Room }>(`/rooms/${roomId}/transfer-ownership`, { userId }).then((r) => r.data.room),
+
+  createInvite: (roomId: string) =>
+    api.post<{ invite: RoomInvite }>(`/rooms/${roomId}/invite`).then((r) => r.data.invite),
+
+  joinByInvite: (code: string) =>
+    api.post<{ ok: boolean; room: Room }>('/rooms/join-by-invite', { code }).then((r) => r.data),
 }
 
 // ─── Projects ─────────────────────────────────────────────────────────────────

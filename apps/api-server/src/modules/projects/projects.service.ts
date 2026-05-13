@@ -37,6 +37,7 @@ export type UpdateCodeResult =
 export type ProjectSnapshot = {
   id: string;
   roomId: string;
+  createdBy: string;
   name: string;
   language: string;
   code: string;
@@ -59,6 +60,7 @@ export async function createProject(params: {
   const project = await prisma.project.create({
     data: {
       roomId: params.roomId,
+      createdBy: params.userId,
       name: params.name,
       language: params.language,
       code: params.code ?? "",
@@ -67,6 +69,7 @@ export async function createProject(params: {
     select: {
       id: true,
       roomId: true,
+      createdBy: true,
       name: true,
       language: true,
       code: true,
@@ -139,6 +142,7 @@ export async function updateProjectCode(params: {
     select: {
       id: true,
       roomId: true,
+      createdBy: true,
       name: true,
       language: true,
       code: true,
@@ -160,6 +164,7 @@ export async function fetchProject(params: {
     select: {
       id: true,
       roomId: true,
+      createdBy: true,
       name: true,
       language: true,
       code: true,
@@ -195,18 +200,29 @@ export async function listRoomProjects(params: { roomId: string; userId: string 
 }
 
 /**
- * Delete a project. Any room member may delete — restrict to owner if needed
- * by checking project.createdBy (not currently tracked in schema).
+ * Delete a project.
+ * Allowed if the requester is the project creator OR the room owner.
  */
 export async function deleteProject(params: { projectId: string; userId: string }) {
   const project = await prisma.project.findUnique({
     where: { id: params.projectId },
-    select: { id: true, roomId: true },
+    select: {
+      id: true,
+      roomId: true,
+      createdBy: true,
+      room: { select: { ownerId: true } },
+    },
   });
   if (!project) throw notFound("Project not found");
 
-  // Must be a room member to delete
+  // Must be a room member first
   await assertRoomMembership({ roomId: project.roomId, userId: params.userId });
+
+  const isCreator = project.createdBy === params.userId;
+  const isRoomOwner = project.room.ownerId === params.userId;
+  if (!isCreator && !isRoomOwner) {
+    throw forbidden("Only the project creator or room owner can delete this project");
+  }
 
   await prisma.project.delete({ where: { id: params.projectId } });
   return { ok: true };

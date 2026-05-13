@@ -64,3 +64,40 @@ export const deleteRoom = asyncHandler(async (req: Request, res: Response) => {
   return res.status(200).json(result);
 });
 
+const transferOwnershipSchema = z.object({
+  userId: z.string().min(1),
+});
+
+export const transferOwnership = asyncHandler(async (req: Request, res: Response) => {
+  const user = requireUser(req);
+  const { roomId } = roomIdParamSchema.parse(req.params);
+  const { userId: newOwnerId } = parseBody(transferOwnershipSchema, req.body);
+
+  const result = await roomsService.transferOwnership({
+    roomId,
+    currentOwnerId: user.id,
+    newOwnerId,
+  });
+  return res.status(200).json(result);
+});
+
+export const createInvite = asyncHandler(async (req: Request, res: Response) => {
+  const user = requireUser(req);
+  const { roomId } = roomIdParamSchema.parse(req.params);
+
+  const invite = await roomsService.createInvite({ roomId, userId: user.id });
+  return res.status(201).json({ invite });
+});
+
+const joinByInviteSchema = z.object({
+  code: z.string().min(1),
+});
+
+export const joinByInvite = asyncHandler(async (req: Request, res: Response) => {
+  const user = requireUser(req);
+  const { code } = parseBody(joinByInviteSchema, req.body);
+
+  const result = await roomsService.joinByInvite({ code, userId: user.id });
+  return res.status(200).json(result);
+});
+

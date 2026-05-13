@@ -34,7 +34,7 @@ apiRouter.get("/ready", async (_req, res) => {
   // Redis check (only if configured)
   if (env.redisUrl) {
     try {
-      const { createRedisClient } = await import("../config/redis");
+      const { createRedisClient } = await import("../config/redis.js");
       const probe = createRedisClient("readiness-probe");
       await probe.connect();
       await probe.ping();

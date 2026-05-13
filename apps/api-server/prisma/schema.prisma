@@ -14,8 +14,10 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  ownedRooms   Room[]   @relation("RoomOwner")
-  memberships  RoomMember[]
+  ownedRooms      Room[]       @relation("RoomOwner")
+  memberships     RoomMember[]
+  createdProjects Project[]    @relation("ProjectCreator")
+  createdInvites  RoomInvite[] @relation("InviteCreator")
 }
 
 model Room {
@@ -25,6 +27,7 @@ model Room {
   owner     User     @relation("RoomOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   members   RoomMember[]
   projects  Project[]
+  invites   RoomInvite[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -44,6 +47,8 @@ model Project {
   id        String   @id @default(cuid())
   roomId    String
   room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdBy String
+  creator   User     @relation("ProjectCreator", fields: [createdBy], references: [id], onDelete: Cascade)
   name      String
   language  String
   code      String   @default("")
@@ -51,5 +56,21 @@ model Project {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([roomId])
+}
+
+model RoomInvite {
+  id        String   @id @default(cuid())
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdBy String
+  creator   User     @relation("InviteCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  code      String   @unique
+  expiresAt DateTime
+  usedCount Int      @default(0)
+  maxUses   Int      @default(100)
+  createdAt DateTime @default(now())
+
+  @@index([code])
   @@index([roomId])
 }

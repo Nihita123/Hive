@@ -23,6 +23,7 @@ export function useProjectSocket(projectId: string | undefined) {
     removeRemoteCursor,
     setExecutionResult,
     setIsExecuting,
+    setIsSaving,
   } = useEditorStore();
 
   const joinedRef = useRef(false);

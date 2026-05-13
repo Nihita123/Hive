@@ -1,4 +1,4 @@
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import rateLimit from "express-rate-limit";
 
 /**
  * Strict limiter for auth endpoints.
@@ -24,7 +24,9 @@ export const executionLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req),
+  // Key by userId when authenticated, fall back to IP for unauthenticated requests
+  keyGenerator: (req) => req.user?.id ?? (req.ip ?? "unknown"),
+  validate: { xForwardedForHeader: false },
   message: {
     error: "TOO_MANY_REQUESTS",
     message: "Execution rate limit exceeded. Max 10 runs per minute.",

@@ -30,6 +30,15 @@ export interface RoomDetails extends Room {
   members: RoomMember[]
 }
 
+export interface RoomInvite {
+  id: string
+  code: string
+  roomId: string
+  expiresAt: string
+  maxUses: number
+  usedCount: number
+}
+
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
 export interface Project {
